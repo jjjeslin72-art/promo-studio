@@ -71,6 +71,7 @@ class MainActivity : Activity() {
     private var dFb = true
     private var dTt = true
     private var dTime = 0L
+    private var dAi = true
 
     private val fmt = SimpleDateFormat("M월 d일 (E) HH:mm", Locale.KOREAN)
 
@@ -212,7 +213,7 @@ class MainActivity : Activity() {
     // 1. 새 게시물
     // =====================================================================
     private fun resetDraft() {
-        dId = null; dMedia = ""; dVideo = false; dCaption = ""; dIdea = ""
+        dId = null; dMedia = ""; dVideo = false; dCaption = ""; dIdea = ""; dAi = true
         dIg = Meta.igReady(this); dFb = Meta.connected(this); dTt = true
         dApp = Store.apps(this).firstOrNull()?.id ?: ""
         // 기본 예약: 오늘 저녁 7시 (지났으면 내일)
@@ -267,9 +268,29 @@ class MainActivity : Activity() {
             }.start()
         }.also { top(it, 8) })
         body.addView(cap)
-        val tags = Regex("#\\S+").findAll(dCaption).count()
-        body.addView(text("${dCaption.length}/2200자 · 해시태그 ${tags}/30개" + if (tags > 30 || dCaption.length > 2200) "  ⚠ 인스타 제한 넘음" else "", 12f,
-            if (tags > 30 || dCaption.length > 2200) red else muted))
+        val counter = text("", 12f, muted)
+        body.addView(counter)
+        // AI 표시
+        val aiBox = check("🤖 AI로 만든 사진·영상이에요 (문구 끝에 '$AI_TAG' 자동으로 붙임)", dAi, true)
+        body.addView(aiBox)
+        val aiNote = text("", 12f, muted)
+        body.addView(aiNote)
+        fun refresh() {
+            val txt = cap.text.toString()
+            val full = if (aiBox.isChecked && !txt.contains(AI_TAG_CHECK, true) && txt.isNotBlank()) txt.trim() + "\n\n" + AI_TAG else txt
+            val tags = Regex("#\\S+").findAll(full).count()
+            val over = tags > 30 || full.length > 2200
+            counter.text = "${full.length}/2200자 · 해시태그 ${tags}/30개" + if (over) "  ⚠ 인스타 제한 넘음" else ""
+            counter.setTextColor(if (over) red else muted)
+            aiNote.text = if (aiBox.isChecked) "틱톡·인스타 규칙상 AI 영상은 꼭 표시해야 해요. 문구에 들어가니 틱톡에서 따로 안 켜도 돼요." else "직접 찍은 사진·영상일 때만 꺼 주세요."
+        }
+        cap.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { refresh() }
+        })
+        aiBox.setOnCheckedChangeListener { _, on -> dAi = on; refresh() }
+        refresh()
 
         // 4) 올릴 곳
         label("4. 올릴 곳")
@@ -316,12 +337,12 @@ class MainActivity : Activity() {
             dMedia.isEmpty() -> { toast("사진이나 영상을 골라 주세요"); return }
             !dIg && !dFb && !dTt -> { toast("올릴 곳을 하나 이상 골라 주세요"); return }
             dCaption.isBlank() -> { toast("문구를 써 주세요"); return }
-            dCaption.length > 2200 && dIg -> { toast("인스타 문구는 2200자까지예요"); return }
+            (if (dAi) dCaption.trim().length + AI_TAG.length + 2 else dCaption.length) > 2200 && dIg -> { toast("인스타 문구는 2200자까지예요"); return }
             !now && dTime < System.currentTimeMillis() -> { toast("예약 시간이 이미 지났어요"); return }
         }
         val old = dId?.let { Store.find(this, it) }
         val p = Post(dId ?: Store.newPostId(), dApp, dCaption.trim(), dMedia, dVideo, dIg, dFb, dTt,
-            if (now) System.currentTimeMillis() else dTime,
+            if (now) System.currentTimeMillis() else dTime, dAi,
             old?.status ?: mutableMapOf(), old?.remoteIds ?: mutableMapOf())
         // 수정한 SNS는 다시 대기 상태로
         p.targets().forEach { if (p.status[it] != "OK") p.status[it] = "" }
@@ -423,7 +444,7 @@ class MainActivity : Activity() {
         if (!f.exists()) { toast("파일이 없어요"); return }
         val pkg = tiktokPkg()
         if (pkg == null) { toast("틱톡 앱이 설치돼 있지 않아요"); return }
-        getSystemService(ClipboardManager::class.java)!!.setPrimaryClip(ClipData.newPlainText("caption", p.caption))
+        getSystemService(ClipboardManager::class.java)!!.setPrimaryClip(ClipData.newPlainText("caption", p.finalCaption()))
         val share = Intent(Intent.ACTION_SEND).apply {
             type = if (p.isVideo) "video/*" else "image/*"
             putExtra(Intent.EXTRA_STREAM, MediaProvider.uriFor(f))
@@ -433,10 +454,18 @@ class MainActivity : Activity() {
         try {
             startActivity(share)
             p.status["tt"] = "OK"; Store.upsert(this, p)
-            toast("문구가 복사됐어요 — 틱톡 설명 칸에 길게 눌러 '붙여넣기' 하세요")
+            tiktokHelp(p.ai)
         } catch (e: Exception) {
             toast("틱톡을 못 열었어요: " + e.message)
         }
+    }
+
+    /** 틱톡으로 넘어간 뒤 할 일 — 길게 남는 안내 */
+    private fun tiktokHelp(ai: Boolean) {
+        val msg = "틱톡에서 이렇게 하세요:\n1. '다음' 누르기\n2. 설명 칸을 길게 눌러 '붙여넣기'" +
+            (if (ai) "\n   (AI 표시 '$AI_TAG'도 같이 들어가요)" else "") + "\n3. '게시'"
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        ui.postDelayed({ Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }, 3600)
     }
 
     // =====================================================================
@@ -477,7 +506,7 @@ class MainActivity : Activity() {
             if (!p.isDone()) {
                 r.addView(button("수정", line) {
                     dId = p.id; dApp = p.appId; dMedia = p.mediaPath; dVideo = p.isVideo; dCaption = p.caption
-                    dIg = p.ig; dFb = p.fb; dTt = p.tt; dTime = maxOf(p.time, now + 10 * 60_000); dIdea = ""
+                    dAi = p.ai; dIg = p.ig; dFb = p.fb; dTt = p.tt; dTime = maxOf(p.time, now + 10 * 60_000); dIdea = ""
                     PostJob.cancel(this, p.id); show(1)
                 }, weight()); r.addView(space(6))
             }

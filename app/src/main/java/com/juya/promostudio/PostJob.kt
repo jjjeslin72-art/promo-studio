@@ -64,8 +64,8 @@ class PostJob : JobService() {
             for (t in listOf("ig", "fb")) {
                 if (t !in p.targets() || p.status[t] == "OK") continue
                 try {
-                    val rid = if (t == "ig") Meta.postInstagram(c, f, p.isVideo, p.caption)
-                    else Meta.postFacebook(c, f, p.isVideo, p.caption)
+                    val rid = if (t == "ig") Meta.postInstagram(c, f, p.isVideo, p.finalCaption())
+                    else Meta.postFacebook(c, f, p.isVideo, p.finalCaption())
                     p.status[t] = "OK"; p.remoteIds[t] = rid
                 } catch (e: Exception) {
                     p.status[t] = e.message ?: "알 수 없는 오류"
@@ -83,7 +83,7 @@ class PostJob : JobService() {
                 notify(c, id.hashCode(), "$app 게시물", msg, Intent(c, MainActivity::class.java).putExtra("tab", 2))
             }
             if (p.tt && p.status["tt"] != "OK") {
-                notify(c, id.hashCode() + 1, "틱톡에 올릴 시간이에요", "$app — 눌러서 틱톡으로 보내기 (문구는 자동 복사)",
+                notify(c, id.hashCode() + 1, "틱톡에 올릴 시간이에요", "$app — 눌러서 틱톡으로 보내기 (문구·AI 표시 자동 복사)",
                     Intent(c, MainActivity::class.java).putExtra("tiktok", id))
             }
         }

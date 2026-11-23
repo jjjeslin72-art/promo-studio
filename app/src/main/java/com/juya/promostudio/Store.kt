@@ -24,17 +24,28 @@ data class Post(
     var fb: Boolean,
     var tt: Boolean,
     var time: Long,
+    // AI로 만든 사진·영상이면 문구 끝에 AI 표시를 자동으로 붙임 (틱톡·인스타 규칙)
+    var ai: Boolean = true,
     // SNS별 상태: "" = 대기, "OK" = 완료, 그 밖 = 실패 이유
     val status: MutableMap<String, String> = mutableMapOf(),
     // 올라간 게시물 id (성과 보기용)
     val remoteIds: MutableMap<String, String> = mutableMapOf(),
 ) {
+    /** 실제로 올라가는 문구 (AI 표시 포함) */
+    fun finalCaption(): String {
+        val c = caption.trim()
+        if (!ai || c.contains(AI_TAG_CHECK, ignoreCase = true)) return c
+        return c + "\n\n" + AI_TAG
+    }
     fun targets(): List<String> = buildList {
         if (ig) add("ig"); if (fb) add("fb"); if (tt) add("tt")
     }
     fun isDone(): Boolean = targets().all { status[it] == "OK" }
     fun hasError(): Boolean = targets().any { val s = status[it]; s != null && s != "" && s != "OK" }
 }
+
+const val AI_TAG = "🤖 Conteúdo gerado por IA #IA"
+const val AI_TAG_CHECK = "gerado por IA"
 
 data class Snapshot(val day: String, val ig: Int, val fb: Int)
 
@@ -117,7 +128,7 @@ object Store {
     private fun toJson(p: Post) = JSONObject()
         .put("id", p.id).put("app", p.appId).put("cap", p.caption)
         .put("media", p.mediaPath).put("video", p.isVideo)
-        .put("ig", p.ig).put("fb", p.fb).put("tt", p.tt).put("time", p.time)
+        .put("ig", p.ig).put("fb", p.fb).put("tt", p.tt).put("time", p.time).put("ai", p.ai)
         .put("status", JSONObject(p.status as Map<*, *>))
         .put("remote", JSONObject(p.remoteIds as Map<*, *>))
 
@@ -130,7 +141,7 @@ object Store {
             o.getString("id"), o.optString("app"), o.optString("cap"),
             o.optString("media"), o.optBoolean("video"),
             o.optBoolean("ig"), o.optBoolean("fb"), o.optBoolean("tt"),
-            o.optLong("time"), st, rm,
+            o.optLong("time"), o.optBoolean("ai", true), st, rm,
         )
     }
 
