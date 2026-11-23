@@ -619,11 +619,79 @@ class MainActivity : Activity() {
     // =====================================================================
     // 3. 성과
     // =====================================================================
+    // ---------- 💰 광고 실험실 ----------
+    private fun adLab() {
+        label("💰 광고 실험실 — 가장 싸게 가장 많이 설치")
+        val c = card()
+        val (vpi, guess) = AdLab.valuePerInstall(this)
+        c.addView(text("설치 1명이 평균 벌어 주는 돈: R$ %.2f%s".format(vpi, if (guess) " (구매 3건 전까지는 2%가 산다고 추정)" else ""), 13f, muted))
+        AdLab.advice(this).forEach { a ->
+            val s = AdLab.sum(this, a.ch)
+            c.addView(text(AdLab.name(a.ch), 15f, ink, true).also { top(it, 10) })
+            if (s.days > 0) c.addView(text("%d일 · 쓴 돈 R$ %.2f · 설치 약 %.0f · 구매 %d · 설치 1건 %s".format(s.days, s.spend, s.installs, s.buys,
+                if (s.installs > 0) "R$ %.2f".format(s.cpi) else "-"), 12f, muted))
+            c.addView(text(a.title, 14f, when (a.level) { 2 -> green; 0 -> red; 1 -> accent; else -> violet }, true))
+            c.addView(text(a.detail, 12f, muted))
+        }
+        c.addView(button("📝 오늘 광고 결과 입력 (1분)", accent) { adInput() }.also { top(it, 12) })
+        c.addView(text("숫자는 각 광고 앱에서 봐요: 구글 광고 → 캠페인(비용·설치) / 틱톡 → 광고 관리(비용·링크 클릭) / 메타 → 광고 관리자(비용·링크 클릭). 구매 수는 Play Console → 수익.", 11f, muted).also { top(it, 6) })
+    }
+
+    private fun adInput() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        var ch = AdLab.CH[0]
+        val chRow = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val res = EditText(this)
+        fun drawCh() {
+            chRow.removeAllViews()
+            AdLab.CH.forEach { k -> chRow.addView(button((if (k == ch) "✓ " else "") + AdLab.name(k), if (k == ch) accent else line) { ch = k; res.hint = AdLab.resultName(k); drawCh() }) }
+        }
+        drawCh(); box.addView(chRow)
+        val spend = dlgInput(box, "오늘 쓴 돈 (R$, 예: 10,50)", "")
+        spend.inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+        res.hint = AdLab.resultName(ch); res.inputType = InputType.TYPE_CLASS_NUMBER; box.addView(res)
+        val buys = dlgInput(box, "오늘 구매 수 (모르면 0)", "0"); buys.inputType = InputType.TYPE_CLASS_NUMBER
+        AlertDialog.Builder(this).setTitle("오늘 광고 결과").setView(box)
+            .setPositiveButton("저장") { _, _ ->
+                val sp = spend.text.toString().replace(",", ".").toDoubleOrNull()
+                val r = res.text.toString().toIntOrNull()
+                if (sp == null || r == null) { toast("돈과 숫자를 넣어 주세요"); return@setPositiveButton }
+                val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                AdLab.add(this, AdDay(ch, day, sp, r, buys.text.toString().toIntOrNull() ?: 0))
+                toast("저장했어요 — 추천이 바뀌었어요"); show(3)
+            }.setNegativeButton("취소", null).show()
+    }
+
+    /** 광고로 밀 영상: 무료로 올렸을 때 반응 1등 (검증된 영상에 돈을 써야 설치 1건이 싸져요) */
+    private fun boostPick() {
+        val done = Store.posts(this).filter { it.isDone() && System.currentTimeMillis() - it.time < 21L * 86_400_000 }
+        val withViews = done.filter { (it.remoteIds["ttv"]?.toIntOrNull() ?: -1) >= 0 }
+        label("🎯 광고로 밀 영상 (무료 반응 1등)")
+        val c = card()
+        val best = withViews.maxByOrNull { it.remoteIds["ttv"]!!.toInt() }
+        if (best == null) c.addView(text("틱톡에 올린 지 이틀 지난 게시물의 조회수를 넣으면, 제일 잘 된 영상을 골라 드려요.", 13f, muted))
+        else {
+            val app = Store.apps(this).firstOrNull { it.id == best.appId }?.name ?: ""
+            c.addView(text("👉 [$app] " + best.caption.lines().first().take(50), 14f, ink, true))
+            c.addView(text("틱톡 조회수 ${best.remoteIds["ttv"]} — 이 영상으로 광고하세요. 반응이 검증된 영상은 같은 돈으로 설치가 훨씬 많이 나와요.", 12f, muted))
+        }
+        done.filter { it.tt && it.remoteIds["ttv"] == null && System.currentTimeMillis() - it.time > 40L * 3_600_000 }.take(3).forEach { p ->
+            c.addView(button("틱톡 조회수 입력: " + p.caption.lines().first().take(24), line) {
+                val e = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER; hint = "조회수" }
+                AlertDialog.Builder(this).setTitle("틱톡 조회수").setView(e).setPositiveButton("저장") { _, _ ->
+                    e.text.toString().toIntOrNull()?.let { v -> p.remoteIds["ttv"] = v.toString(); Store.upsert(this, p); show(3) }
+                }.setNegativeButton("취소", null).show()
+            }.also { top(it, 6) })
+        }
+    }
+
     private fun statsScreen() {
         title("성과", "팔로워 변화와 게시물 반응")
         if (!Meta.connected(this)) {
             notice("인스타·페이스북을 연결하면 팔로워와 좋아요를 볼 수 있어요.") { show(4) }
         }
+        adLab()
+        boostPick()
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         body.addView(box)
         drawSnapshots(box)
