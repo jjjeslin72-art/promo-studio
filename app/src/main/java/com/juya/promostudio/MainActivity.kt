@@ -180,10 +180,11 @@ class MainActivity : Activity() {
             if (app.desc.isNotBlank()) c.addView(text(app.desc, 13f, muted))
             c.addView(text("올린 게시물 $done · 예약 대기 $waiting", 12f, if (done > 0) green else muted).also { top(it, 6) })
             val btns = row()
-            btns.addView(button("홍보 만들기", accent) { resetDraft(); dApp = app.id; show(1) }, weight())
+            c.addView(button("⚡ 자동 홍보 — 영상만 고르면 끝", violet) { autoStart(app.id) }.also { top(it, 10) })
+            btns.addView(button("직접 만들기", accent) { resetDraft(); dApp = app.id; show(1) }, weight())
             btns.addView(space(8))
             btns.addView(button("수정", line) { editApp(app) }, weight())
-            top(btns, 10)
+            top(btns, 8)
             c.addView(btns)
         }
         body.addView(button("+ 앱 추가", violet) { editApp(null) }.also { top(it, 8) })
@@ -262,7 +263,7 @@ class MainActivity : Activity() {
             toast("AI가 문구를 쓰고 있어요…")
             Thread {
                 try {
-                    val r = Ai.caption(this, app, dIdea, dLang)
+                    val r = Ai.caption(this, app, dIdea, dLang, if (dMedia.isNotEmpty()) frames(File(dMedia), dVideo) else emptyList())
                     ui.post { dCaption = r; show(1) }
                 } catch (e: Exception) { ui.post { toast("AI 오류: " + e.message) } }
             }.start()
@@ -370,6 +371,98 @@ class MainActivity : Activity() {
         }.show()
     }
 
+    // =====================================================================
+    // ⚡ 자동 홍보: 영상 하나 고르면 문구·해시태그·시간·올릴 곳을 알아서 정해서 예약
+    // =====================================================================
+    private var autoApp = ""
+
+    private fun autoStart(appId: String) {
+        if (!Ai.ready(this)) {
+            AlertDialog.Builder(this).setTitle("AI 키가 필요해요")
+                .setMessage("자동 홍보는 AI(Gemini)가 영상을 보고 문구를 써요.\n'설정'에서 Gemini 키를 한 번만 넣어 주세요. (무료로 받을 수 있어요)")
+                .setPositiveButton("설정으로") { _, _ -> show(4) }.setNegativeButton("닫기", null).show()
+            return
+        }
+        autoApp = appId
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(i, 2)
+    }
+
+    /** 영상에서 장면 3장(처음·중간·끝 쪽)을 뽑아 AI에게 보여 줌 */
+    private fun frames(f: File, video: Boolean): List<String> {
+        val bms = mutableListOf<Bitmap>()
+        try {
+            if (video) {
+                val r = MediaMetadataRetriever(); r.setDataSource(f.path)
+                val dur = (r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 8000L) * 1000
+                listOf(0.2, 0.5, 0.8).forEach { k -> r.getFrameAtTime((dur * k).toLong(), MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?.let { bms.add(it) } }
+                r.release()
+            } else BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = 2 })?.let { bms.add(it) }
+        } catch (_: Exception) {}
+        return bms.map { b ->
+            val w = 512; val h = (b.height * w / b.width.coerceAtLeast(1)).coerceAtLeast(1)
+            val s = Bitmap.createScaledBitmap(b, w, h, true)
+            val o = java.io.ByteArrayOutputStream(); s.compress(Bitmap.CompressFormat.JPEG, 70, o)
+            android.util.Base64.encodeToString(o.toByteArray(), android.util.Base64.NO_WRAP)
+        }
+    }
+
+    /**
+     * 가장 반응 좋은 다음 시간: 평일 12:30·19:30, 주말 11:00·20:00 (브라질 SNS 활동 시간)
+     * 30분 뒤부터, 같은 앱 게시물과는 최소 하루 간격 (너무 자주 올리면 노출이 줄어요)
+     */
+    private fun bestTime(appId: String): Long {
+        val taken = Store.posts(this).filter { it.appId == appId && !it.isDone() }.map { it.time }
+        val cal = Calendar.getInstance()
+        val earliest = System.currentTimeMillis() + 30 * 60_000
+        for (day in 0..14) {
+            val c = Calendar.getInstance().apply { timeInMillis = cal.timeInMillis; add(Calendar.DAY_OF_MONTH, day) }
+            val weekend = c.get(Calendar.DAY_OF_WEEK) in listOf(Calendar.SATURDAY, Calendar.SUNDAY)
+            val slots = if (weekend) listOf(11 to 0, 20 to 0) else listOf(19 to 30, 12 to 30)
+            for ((h, m) in slots.sortedBy { it.first }) {
+                c.set(Calendar.HOUR_OF_DAY, h); c.set(Calendar.MINUTE, m); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
+                val t = c.timeInMillis
+                if (t >= earliest && taken.none { kotlin.math.abs(it - t) < 20 * 60 * 60_000L }) return t
+            }
+        }
+        return earliest
+    }
+
+    private fun autoRun() {
+        val app = Store.apps(this).firstOrNull { it.id == dApp } ?: return
+        val media = dMedia; val video = dVideo
+        val wait = AlertDialog.Builder(this).setTitle("⚡ 자동 홍보 만드는 중…")
+            .setMessage("AI가 영상을 보고 문구·해시태그를 쓰고,\n제일 반응 좋은 시간을 고르고 있어요.").setCancelable(false).show()
+        Thread {
+            try {
+                val cap = Ai.caption(this, app, "", "pt", frames(File(media), video))
+                val time = bestTime(app.id)
+                val p = Post(Store.newPostId(), app.id, cap.trim(), media, video,
+                    Meta.igReady(this), Meta.connected(this), true, time, true)
+                p.targets().forEach { p.status[it] = "" }
+                Store.upsert(this, p); PostJob.schedule(this, p)
+                ui.post {
+                    wait.dismiss(); resetDraft()
+                    val where = p.targets().joinToString(", ") { PostJob.name(it) }
+                    AlertDialog.Builder(this).setTitle("✅ 예약 완료")
+                        .setMessage("🗓 ${fmt.format(Date(p.time))}\n📍 $where\n\n${p.finalCaption()}")
+                        .setPositiveButton("좋아요") { _, _ -> show(2) }
+                        .setNeutralButton("고칠래요") { _, _ ->
+                            PostJob.cancel(this, p.id)
+                            dId = p.id; dApp = p.appId; dMedia = p.mediaPath; dVideo = p.isVideo; dCaption = p.caption
+                            dAi = p.ai; dIg = p.ig; dFb = p.fb; dTt = p.tt; dTime = p.time; show(1)
+                        }.setCancelable(false).show()
+                }
+            } catch (e: Exception) {
+                ui.post { wait.dismiss(); toast("자동 홍보 실패: " + e.message + " — '직접 만들기'로 해 보세요") }
+            }
+        }.start()
+    }
+
     // ---------- 파일 고르기 ----------
     private fun pick() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -386,6 +479,10 @@ class MainActivity : Activity() {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 1 && resultCode == RESULT_OK) data?.data?.let { importMedia(it); show(1) }
+        if (requestCode == 2 && resultCode == RESULT_OK) data?.data?.let { u ->
+            val keep = autoApp; resetDraft(); dApp = keep; importMedia(u)
+            if (dMedia.isNotEmpty()) autoRun()
+        }
     }
 
     /** 고른 파일을 앱 안으로 복사 (예약 시간에 갤러리에서 지워져도 올라가게) */
