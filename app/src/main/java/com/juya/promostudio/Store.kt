@@ -41,7 +41,8 @@ data class Post(
         if (ig) add("ig"); if (fb) add("fb"); if (tt) add("tt")
     }
     fun isDone(): Boolean = targets().all { status[it] == "OK" }
-    fun hasError(): Boolean = targets().any { val s = status[it]; s != null && s != "" && s != "OK" }
+    // 자동으로 올리는 건 인스타뿐 → 인스타 실패만 '다시 시도' 대상 (페이스북·틱톡은 알림 눌러서)
+    fun hasError(): Boolean = ig && status["ig"].let { it != null && it != "" && it != "OK" }
 }
 
 const val AI_TAG = "🤖 Conteúdo gerado por IA #IA"

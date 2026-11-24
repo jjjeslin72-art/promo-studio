@@ -118,6 +118,7 @@ class MainActivity : Activity() {
     private fun handle(i: Intent?) {
         if (i == null) return
         i.getStringExtra("tiktok")?.let { shareTikTok(it); i.removeExtra("tiktok") }
+        i.getStringExtra("facebook")?.let { shareFacebook(it); i.removeExtra("facebook") }
         if (i.hasExtra("tab")) { show(i.getIntExtra("tab", 0)); i.removeExtra("tab") }
         if (i.action == Intent.ACTION_SEND) {
             @Suppress("DEPRECATION")
@@ -215,7 +216,7 @@ class MainActivity : Activity() {
     // =====================================================================
     private fun resetDraft() {
         dId = null; dMedia = ""; dVideo = false; dCaption = ""; dIdea = ""; dAi = true
-        dIg = Meta.igReady(this); dFb = Meta.connected(this); dTt = true
+        dIg = Meta.igReady(this); dFb = true; dTt = true
         dApp = Store.apps(this).firstOrNull()?.id ?: ""
         // 기본 예약: 오늘 저녁 7시 (지났으면 내일)
         val cal = Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY, 19); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0) }
@@ -296,7 +297,7 @@ class MainActivity : Activity() {
         // 4) 올릴 곳
         label("4. 올릴 곳")
         val ig = check("인스타그램 (자동)" + if (!Meta.igReady(this)) " — 설정에서 연결 필요" else "", dIg && Meta.igReady(this), Meta.igReady(this))
-        val fb = check("페이스북 페이지 (자동)" + if (!Meta.connected(this)) " — 설정에서 연결 필요" else "", dFb && Meta.connected(this), Meta.connected(this))
+        val fb = check("페이스북 내 프로필 (시간 되면 알림 → 눌러서 올리기)", dFb, true)
         val tt = check("틱톡 (시간 되면 알림 → 눌러서 올리기)", dTt, true)
         body.addView(ig); body.addView(fb); body.addView(tt)
         if (!dVideo && dMedia.isNotEmpty()) body.addView(text("틱톡은 영상 위주예요. 사진은 틱톡에서 '사진' 게시로 올라가요.", 12f, muted))
@@ -352,7 +353,7 @@ class MainActivity : Activity() {
             toast("올리는 중… 예약 탭에서 진행 상황이 보여요")
             Thread { PostJob.run(applicationContext, p.id); ui.post { if (tab == 2) show(2) } }.start()
             ui.postDelayed({ if (!p.tt) show(2) }, 400)
-            if (p.tt) shareTikTok(p.id)
+            if (p.tt) shareTikTok(p.id) else if (p.fb) shareFacebook(p.id)
         } else {
             PostJob.schedule(this, p)
             toast("예약 완료: " + fmt.format(Date(p.time)))
@@ -443,7 +444,7 @@ class MainActivity : Activity() {
                 val cap = Ai.caption(this, app, "", "pt", frames(File(media), video))
                 val time = bestTime(app.id)
                 val p = Post(Store.newPostId(), app.id, cap.trim(), media, video,
-                    Meta.igReady(this), Meta.connected(this), true, time, true)
+                    Meta.igReady(this), true, true, time, true)
                 p.targets().forEach { p.status[it] = "" }
                 Store.upsert(this, p); PostJob.schedule(this, p)
                 ui.post {
@@ -558,6 +559,33 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 페이스북 개인 프로필(주정자)로 보내기 — 영상 넣은 채로 페이스북 앱 열고 문구는 복사 */
+    private fun shareFacebook(id: String) {
+        val p = Store.find(this, id) ?: return
+        val f = File(p.mediaPath)
+        if (!f.exists()) { toast("파일이 없어요"); return }
+        val pkg = listOf("com.facebook.katana", "com.facebook.lite").firstOrNull {
+            try { packageManager.getPackageInfo(it, 0); true } catch (e: Exception) { false }
+        }
+        if (pkg == null) { toast("페이스북 앱이 설치돼 있지 않아요"); return }
+        getSystemService(ClipboardManager::class.java)!!.setPrimaryClip(ClipData.newPlainText("caption", p.finalCaption()))
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = if (p.isVideo) "video/*" else "image/*"
+            putExtra(Intent.EXTRA_STREAM, MediaProvider.uriFor(f))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            setPackage(pkg)
+        }
+        try {
+            startActivity(share)
+            p.status["fb"] = "OK"; Store.upsert(this, p)
+            val msg = "페이스북에서:\n1. '피드'(게시물) 고르기\n2. 글 쓰는 칸을 길게 눌러 '붙여넣기'\n3. '게시'"
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            ui.postDelayed({ Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }, 3600)
+        } catch (e: Exception) {
+            toast("페이스북을 못 열었어요: " + e.message)
+        }
+    }
+
     /** 틱톡으로 넘어간 뒤 할 일 — 길게 남는 안내 */
     private fun tiktokHelp(ai: Boolean) {
         val msg = "틱톡에서 이렇게 하세요:\n1. '다음' 누르기\n2. 설명 칸을 길게 눌러 '붙여넣기'" +
@@ -601,18 +629,19 @@ class MainActivity : Activity() {
                 }
                 val (msg, col) = when {
                     s == "OK" -> "✓ 완료" to green
+                    (t == "tt" || t == "fb") && p.time <= now -> "버튼 눌러서 올리기" to accent
                     s.isNotEmpty() -> "✗ $s" to red
-                    t == "tt" && p.time <= now -> "알림 눌러서 올리기" to accent
                     else -> "대기 중" to muted
                 }
                 c.addView(text("${PostJob.name(t)}: $msg", 13f, col).also { top(it, 2) })
             }
             val r = row()
+            if (p.fb && p.status["fb"] != "OK" && p.time <= now) { r.addView(button("페북 올리기", accent) { shareFacebook(p.id); show(2) }, weight()); r.addView(space(6)) }
             if (p.tt && p.status["tt"] != "OK") { r.addView(button("틱톡 올리기", accent) { shareTikTok(p.id); show(2) }, weight()); r.addView(space(6)) }
             val uploading = p.targets().any { PostJob.liveOf(p.id, it) != null }
             if (p.hasError() && !uploading) {
                 r.addView(button("다시 시도", violet) {
-                    p.targets().forEach { if (p.status[it] != "OK") p.status[it] = "" }
+                    if (p.status["ig"] != "OK") p.status["ig"] = ""
                     Store.upsert(this, p); toast("다시 올리는 중…")
                     Thread { PostJob.run(applicationContext, p.id); ui.post { if (tab == 2) show(2) } }.start()
                     ui.postDelayed({ if (tab == 2) show(2) }, 400)

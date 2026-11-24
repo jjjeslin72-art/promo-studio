@@ -66,7 +66,8 @@ class PostJob : JobService() {
                 p.targets().forEach { if (p.status[it] != "OK") p.status[it] = "사진·영상 파일이 없어요" }
                 Store.upsert(c, p); return
             }
-            for (t in listOf("ig", "fb")) {
+            // 페이스북은 개인 프로필(주정자)에 올림 → Meta가 자동 게시를 막아서 틱톡처럼 알림으로 (페이지엔 절대 안 올림)
+            for (t in listOf("ig")) {
                 if (t !in p.targets() || p.status[t] == "OK") continue
                 val key = "$id:$t"
                 val nid = id.hashCode() + 100 + t.hashCode() % 50
@@ -90,8 +91,8 @@ class PostJob : JobService() {
                 Store.upsert(c, p)
             }
             val app = Store.apps(c).firstOrNull { it.id == p.appId }?.name ?: "홍보"
-            val ok = listOf("ig", "fb").filter { it in p.targets() && p.status[it] == "OK" }
-            val bad = listOf("ig", "fb").filter { it in p.targets() && p.status[it] != "OK" }
+            val ok = listOf("ig").filter { it in p.targets() && p.status[it] == "OK" }
+            val bad = listOf("ig").filter { it in p.targets() && p.status[it] != "OK" }
             if (ok.isNotEmpty() || bad.isNotEmpty()) {
                 val msg = buildString {
                     if (ok.isNotEmpty()) append(ok.joinToString(", ") { name(it) } + " 올림 완료. ")
@@ -99,13 +100,17 @@ class PostJob : JobService() {
                 }
                 notify(c, id.hashCode(), "$app 게시물", msg, Intent(c, MainActivity::class.java).putExtra("tab", 2))
             }
+            if (p.fb && p.status["fb"] != "OK") {
+                notify(c, id.hashCode() + 2, "페이스북(내 프로필)에 올릴 시간이에요", "$app — 눌러서 페이스북으로 보내기 (문구 자동 복사)",
+                    Intent(c, MainActivity::class.java).putExtra("facebook", id))
+            }
             if (p.tt && p.status["tt"] != "OK") {
                 notify(c, id.hashCode() + 1, "틱톡에 올릴 시간이에요", "$app — 눌러서 틱톡으로 보내기 (문구·AI 표시 자동 복사)",
                     Intent(c, MainActivity::class.java).putExtra("tiktok", id))
             }
         }
 
-        fun name(t: String) = when (t) { "ig" -> "인스타"; "fb" -> "페이스북"; else -> "틱톡" }
+        fun name(t: String) = when (t) { "ig" -> "인스타"; "fb" -> "페이스북(내 프로필)"; else -> "틱톡" }
 
         /** 알림창에 진행 막대 (앱을 닫아도 보임) */
         private fun progressNote(c: Context, nid: Int, title: String, text: String, pct: Int) {
