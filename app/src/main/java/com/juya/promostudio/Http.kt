@@ -78,13 +78,45 @@ object Http {
         return read(c)
     }
 
-    /** 파일 그대로 올리기 (인스타 릴스 업로드용) */
-    fun postBinary(url: String, file: File, headers: Map<String, String>): JSONObject {
+    /**
+     * 파일 그대로 올리기 (인스타 릴스 업로드용).
+     * 보내는 도중 서버가 연결을 끊으면(예: 토큰·권한 오류) 서버가 보낸 진짜 이유를 읽어서 알려 준다.
+     */
+    fun postBinary(url: String, file: File, headers: Map<String, String>, skip: Long = 0): JSONObject {
         val c = open(url, "POST")
+        c.readTimeout = 300_000
         c.doOutput = true
-        c.setFixedLengthStreamingMode(file.length())
+        c.setFixedLengthStreamingMode(file.length() - skip)
         headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
-        c.outputStream.use { out -> file.inputStream().use { it.copyTo(out, 256 * 1024) } }
+        try {
+            c.outputStream.use { out ->
+                file.inputStream().use { inp ->
+                    if (skip > 0) inp.skip(skip)
+                    inp.copyTo(out, 256 * 1024)
+                }
+            }
+        } catch (e: java.io.IOException) {
+            // 서버가 먼저 거절했으면 그 이유를 보여 준다
+            val reason = try {
+                c.errorStream?.bufferedReader()?.use { it.readText() }?.let { body ->
+                    try { JSONObject(body).optJSONObject("debug_info")?.optString("message")
+                        ?: JSONObject(body).optJSONObject("error")?.optString("message") } catch (_: Exception) { body.take(200) }
+                }
+            } catch (_: Exception) { null }
+            throw java.io.IOException(reason?.takeIf { it.isNotBlank() } ?: (e.message ?: "업로드 중 연결이 끊겼어요"))
+        }
         return read(c)
+    }
+
+    /** 잠깐 끊김(와이파이·통신) 때문에 실패하면 몇 번 더 시도 */
+    fun <T> retry(times: Int = 3, block: (attempt: Int) -> T): T {
+        var last: Exception? = null
+        for (i in 1..times) {
+            try { return block(i) } catch (e: ApiError) { throw e } catch (e: java.io.IOException) {
+                last = e
+                Thread.sleep(3_000L * i)
+            }
+        }
+        throw last ?: ApiError("업로드 실패")
     }
 }

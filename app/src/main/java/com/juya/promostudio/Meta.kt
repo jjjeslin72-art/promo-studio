@@ -11,7 +11,6 @@ import java.io.File
 object Meta {
     const val VER = "v23.0"
     private const val G = "https://graph.facebook.com/$VER"
-    private const val GV = "https://graph-video.facebook.com/$VER"
 
     data class Page(val id: String, val name: String, val token: String, val igId: String, val igName: String)
 
@@ -55,8 +54,11 @@ object Meta {
     fun postFacebook(c: Context, file: File, isVideo: Boolean, caption: String): String {
         val page = Store.get(c, "pageId")
         return if (isVideo) {
-            Http.postMultipart("$GV/$page/videos",
-                mapOf("description" to caption, "access_token" to tok(c)), "source", file, "video/mp4").getString("id")
+            // 예전 주소(graph-video)는 일부 통신망에서 못 찾음 → 기본 주소로, 끊기면 다시 시도
+            Http.retry(3) {
+                Http.postMultipart("$G/$page/videos",
+                    mapOf("description" to caption, "access_token" to tok(c)), "source", file, "video/mp4").getString("id")
+            }
         } else {
             val r = Http.postMultipart("$G/$page/photos",
                 mapOf("message" to caption, "access_token" to tok(c)), "source", file, mime(file))
@@ -83,13 +85,25 @@ object Meta {
         ))
         val id = r.getString("id")
         val uri = r.optString("uri").ifEmpty { "https://rupload.facebook.com/ig-api-upload/$VER/$id" }
-        Http.postBinary(uri, file, mapOf(
-            "Authorization" to "OAuth ${tok(c)}",
-            "offset" to "0",
-            "file_size" to file.length().toString(),
-        ))
+        // 끊기면 이어서 다시 보내기 (최대 4번) — 처음부터가 아니라 끊긴 곳부터
+        Http.retry(4) { attempt ->
+            val offset = if (attempt == 1) 0L else uploadedBytes(c, uri, file.length())
+            Http.postBinary(uri, file, mapOf(
+                "Authorization" to "OAuth ${tok(c)}",
+                "offset" to offset.toString(),
+                "file_size" to file.length().toString(),
+            ), skip = offset)
+        }
         return id
     }
+
+    /** 지금까지 Meta 서버에 올라간 크기 (모르면 0 → 처음부터) */
+    private fun uploadedBytes(c: Context, uri: String, size: Long): Long = try {
+        val conn = (java.net.URL(uri).openConnection() as java.net.HttpURLConnection).apply {
+            setRequestProperty("Authorization", "OAuth ${tok(c)}"); connectTimeout = 20_000; readTimeout = 20_000
+        }
+        org.json.JSONObject(conn.inputStream.bufferedReader().use { it.readText() }).optLong("offset", 0L).coerceIn(0L, size)
+    } catch (_: Exception) { 0L }
 
     /**
      * 인스타 사진 API는 인터넷 주소(URL)만 받음 → 페이지에 '비공개 사진'으로 먼저 올려서
