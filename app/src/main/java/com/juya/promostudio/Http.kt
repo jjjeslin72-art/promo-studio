@@ -59,7 +59,8 @@ object Http {
     }
 
     /** 파일 + 글자 필드를 multipart로 올리기 */
-    fun postMultipart(url: String, fields: Map<String, String>, fileField: String, file: File, mime: String): JSONObject {
+    fun postMultipart(url: String, fields: Map<String, String>, fileField: String, file: File, mime: String,
+                      onProgress: ((Int) -> Unit)? = null): JSONObject {
         val b = "----promo" + System.currentTimeMillis()
         val c = open(url, "POST")
         c.doOutput = true
@@ -72,7 +73,7 @@ object Http {
                 out.write("\r\n".toByteArray())
             }
             out.write("--$b\r\nContent-Disposition: form-data; name=\"$fileField\"; filename=\"${file.name}\"\r\nContent-Type: $mime\r\n\r\n".toByteArray())
-            file.inputStream().use { it.copyTo(out, 256 * 1024) }
+            file.inputStream().use { copyWithProgress(it, out, 0, file.length(), onProgress) }
             out.write("\r\n--$b--\r\n".toByteArray())
         }
         return read(c)
@@ -82,7 +83,8 @@ object Http {
      * 파일 그대로 올리기 (인스타 릴스 업로드용).
      * 보내는 도중 서버가 연결을 끊으면(예: 토큰·권한 오류) 서버가 보낸 진짜 이유를 읽어서 알려 준다.
      */
-    fun postBinary(url: String, file: File, headers: Map<String, String>, skip: Long = 0): JSONObject {
+    fun postBinary(url: String, file: File, headers: Map<String, String>, skip: Long = 0,
+                   onProgress: ((Int) -> Unit)? = null): JSONObject {
         val c = open(url, "POST")
         c.readTimeout = 300_000
         c.doOutput = true
@@ -92,7 +94,7 @@ object Http {
             c.outputStream.use { out ->
                 file.inputStream().use { inp ->
                     if (skip > 0) inp.skip(skip)
-                    inp.copyTo(out, 256 * 1024)
+                    copyWithProgress(inp, out, skip, file.length(), onProgress)
                 }
             }
         } catch (e: java.io.IOException) {
@@ -106,6 +108,19 @@ object Http {
             throw java.io.IOException(reason?.takeIf { it.isNotBlank() } ?: (e.message ?: "업로드 중 연결이 끊겼어요"))
         }
         return read(c)
+    }
+
+    /** 보내면서 몇 % 갔는지 알려 주기 */
+    private fun copyWithProgress(inp: java.io.InputStream, out: java.io.OutputStream, start: Long, total: Long, onProgress: ((Int) -> Unit)?) {
+        val buf = ByteArray(256 * 1024)
+        var sent = start
+        var last = -1
+        while (true) {
+            val n = inp.read(buf); if (n < 0) break
+            out.write(buf, 0, n); sent += n
+            val pct = if (total > 0) (sent * 100 / total).toInt().coerceIn(0, 100) else 0
+            if (pct != last) { last = pct; onProgress?.invoke(pct) }
+        }
     }
 
     /** 잠깐 끊김(와이파이·통신) 때문에 실패하면 몇 번 더 시도 */

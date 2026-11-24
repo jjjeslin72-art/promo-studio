@@ -34,6 +34,11 @@ class PostJob : JobService() {
 
     companion object {
         const val CH = "posting"
+        const val CH_PROG = "posting_progress"
+
+        /** 지금 올라가는 중인 것: "게시물id:ig" → (단계 글, 퍼센트 / -1이면 끝 모름) */
+        val live = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Int>>()
+        fun liveOf(id: String, t: String) = live["$id:$t"]
 
         fun schedule(c: Context, p: Post) {
             val js = c.getSystemService(JobScheduler::class.java)!!
@@ -63,12 +68,24 @@ class PostJob : JobService() {
             }
             for (t in listOf("ig", "fb")) {
                 if (t !in p.targets() || p.status[t] == "OK") continue
+                val key = "$id:$t"
+                val nid = id.hashCode() + 100 + t.hashCode() % 50
+                var lastNote = 0L
+                val step: (String, Int) -> Unit = { msg, pct ->
+                    live[key] = msg to pct
+                    val now = System.currentTimeMillis()
+                    if (now - lastNote > 700 || pct == 100 || pct < 0) { lastNote = now; progressNote(c, nid, "${name(t)}에 올리는 중", msg, pct) }
+                }
+                step("시작하는 중", -1)
                 try {
-                    val rid = if (t == "ig") Meta.postInstagram(c, f, p.isVideo, p.finalCaption())
-                    else Meta.postFacebook(c, f, p.isVideo, p.finalCaption())
+                    val rid = if (t == "ig") Meta.postInstagram(c, f, p.isVideo, p.finalCaption(), step)
+                    else Meta.postFacebook(c, f, p.isVideo, p.finalCaption(), step)
                     p.status[t] = "OK"; p.remoteIds[t] = rid
                 } catch (e: Exception) {
                     p.status[t] = e.message ?: "알 수 없는 오류"
+                } finally {
+                    live.remove(key)
+                    c.getSystemService(NotificationManager::class.java)?.cancel(nid)
                 }
                 Store.upsert(c, p)
             }
@@ -89,6 +106,23 @@ class PostJob : JobService() {
         }
 
         fun name(t: String) = when (t) { "ig" -> "인스타"; "fb" -> "페이스북"; else -> "틱톡" }
+
+        /** 알림창에 진행 막대 (앱을 닫아도 보임) */
+        private fun progressNote(c: Context, nid: Int, title: String, text: String, pct: Int) {
+            val nm = c.getSystemService(NotificationManager::class.java) ?: return
+            nm.createNotificationChannel(NotificationChannel(CH_PROG, "올리는 중 표시", NotificationManager.IMPORTANCE_LOW))
+            val pi = PendingIntent.getActivity(c, nid, Intent(c, MainActivity::class.java).putExtra("tab", 2)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val n = Notification.Builder(c, CH_PROG)
+                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setContentTitle(title)
+                .setContentText(if (pct >= 0) "$text $pct%" else "$text…")
+                .setProgress(100, pct.coerceAtLeast(0), pct < 0)
+                .setOngoing(true).setOnlyAlertOnce(true)
+                .setContentIntent(pi)
+                .build()
+            try { nm.notify(nid, n) } catch (_: SecurityException) { }
+        }
 
         private fun notify(c: Context, nid: Int, title: String, text: String, intent: Intent) {
             val nm = c.getSystemService(NotificationManager::class.java)!!

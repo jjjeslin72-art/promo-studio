@@ -349,8 +349,9 @@ class MainActivity : Activity() {
         p.targets().forEach { if (p.status[it] != "OK") p.status[it] = "" }
         Store.upsert(this, p)
         if (now) {
-            toast("올리는 중… 완료되면 알림이 와요")
+            toast("올리는 중… 예약 탭에서 진행 상황이 보여요")
             Thread { PostJob.run(applicationContext, p.id); ui.post { if (tab == 2) show(2) } }.start()
+            ui.postDelayed({ if (!p.tt) show(2) }, 400)
             if (p.tt) shareTikTok(p.id)
         } else {
             PostJob.schedule(this, p)
@@ -568,8 +569,12 @@ class MainActivity : Activity() {
     // =====================================================================
     // 2. 예약 목록
     // =====================================================================
+    private val liveTick = Runnable { if (tab == 2 && PostJob.live.isNotEmpty()) show(2) }
+
     private fun scheduleScreen() {
         title("예약 · 올린 기록", "예약된 게시물과 결과")
+        ui.removeCallbacks(liveTick)
+        if (PostJob.live.isNotEmpty()) ui.postDelayed(liveTick, 1000)
         val apps = Store.apps(this).associateBy { it.id }
         val list = Store.posts(this).sortedByDescending { it.time }
         if (list.isEmpty()) { body.addView(text("아직 게시물이 없어요. '새 게시물'에서 만들어 보세요.", 14f, muted)); return }
@@ -583,6 +588,17 @@ class MainActivity : Activity() {
             c.addView(text(p.caption.lines().firstOrNull()?.take(60) ?: "", 13f, muted).also { top(it, 4) })
             p.targets().forEach { t ->
                 val s = p.status[t] ?: ""
+                val lv = PostJob.liveOf(p.id, t)
+                if (lv != null) {
+                    val (m, pct) = lv
+                    c.addView(text("${PostJob.name(t)}: ⏳ $m" + (if (pct >= 0) " $pct%" else "…"), 13f, violet, true).also { top(it, 2) })
+                    c.addView(android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                        max = 100; isIndeterminate = pct < 0; progress = pct.coerceAtLeast(0)
+                        progressTintList = android.content.res.ColorStateList.valueOf(violet)
+                        indeterminateTintList = android.content.res.ColorStateList.valueOf(violet)
+                    }.also { top(it, 4) })
+                    return@forEach
+                }
                 val (msg, col) = when {
                     s == "OK" -> "✓ 완료" to green
                     s.isNotEmpty() -> "✗ $s" to red
@@ -593,11 +609,13 @@ class MainActivity : Activity() {
             }
             val r = row()
             if (p.tt && p.status["tt"] != "OK") { r.addView(button("틱톡 올리기", accent) { shareTikTok(p.id); show(2) }, weight()); r.addView(space(6)) }
-            if (p.hasError()) {
+            val uploading = p.targets().any { PostJob.liveOf(p.id, it) != null }
+            if (p.hasError() && !uploading) {
                 r.addView(button("다시 시도", violet) {
                     p.targets().forEach { if (p.status[it] != "OK") p.status[it] = "" }
                     Store.upsert(this, p); toast("다시 올리는 중…")
                     Thread { PostJob.run(applicationContext, p.id); ui.post { if (tab == 2) show(2) } }.start()
+                    ui.postDelayed({ if (tab == 2) show(2) }, 400)
                 }, weight()); r.addView(space(6))
             }
             if (!p.isDone()) {

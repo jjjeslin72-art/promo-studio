@@ -51,31 +51,35 @@ object Meta {
     private fun tok(c: Context) = Store.get(c, "pageToken")
 
     // ---------- 페이스북 페이지에 올리기 ----------
-    fun postFacebook(c: Context, file: File, isVideo: Boolean, caption: String): String {
+    /** step(글, 퍼센트) — 퍼센트가 -1이면 "처리 중"(끝 모름) */
+    fun postFacebook(c: Context, file: File, isVideo: Boolean, caption: String, step: (String, Int) -> Unit = { _, _ -> }): String {
         val page = Store.get(c, "pageId")
         return if (isVideo) {
             // 예전 주소(graph-video)는 일부 통신망에서 못 찾음 → 기본 주소로, 끊기면 다시 시도
             Http.retry(3) {
                 Http.postMultipart("$G/$page/videos",
-                    mapOf("description" to caption, "access_token" to tok(c)), "source", file, "video/mp4").getString("id")
+                    mapOf("description" to caption, "access_token" to tok(c)), "source", file, "video/mp4") { step("영상 보내는 중", it) }.getString("id")
             }
         } else {
             val r = Http.postMultipart("$G/$page/photos",
-                mapOf("message" to caption, "access_token" to tok(c)), "source", file, mime(file))
+                mapOf("message" to caption, "access_token" to tok(c)), "source", file, mime(file)) { step("사진 보내는 중", it) }
             r.optString("post_id").ifEmpty { r.getString("id") }
         }
     }
 
     // ---------- 인스타그램에 올리기 ----------
-    fun postInstagram(c: Context, file: File, isVideo: Boolean, caption: String): String {
+    fun postInstagram(c: Context, file: File, isVideo: Boolean, caption: String, step: (String, Int) -> Unit = { _, _ -> }): String {
         val ig = Store.get(c, "igId")
-        val container = if (isVideo) reelContainer(c, ig, file, caption) else photoContainer(c, ig, file, caption)
+        step("준비 중", -1)
+        val container = if (isVideo) reelContainer(c, ig, file, caption, step) else photoContainer(c, ig, file, caption, step)
+        step(if (isVideo) "인스타가 영상 처리 중 (1~3분)" else "인스타가 사진 처리 중", -1)
         waitReady(c, container)
+        step("게시하는 중", 100)
         return Http.postForm("$G/$ig/media_publish", mapOf("creation_id" to container, "access_token" to tok(c))).getString("id")
     }
 
     /** 영상은 릴스로: 파일을 Meta 서버에 직접 업로드 (따로 서버 필요 없음) */
-    private fun reelContainer(c: Context, ig: String, file: File, caption: String): String {
+    private fun reelContainer(c: Context, ig: String, file: File, caption: String, step: (String, Int) -> Unit): String {
         val r = Http.postForm("$G/$ig/media", mapOf(
             "media_type" to "REELS",
             "upload_type" to "resumable",
@@ -92,7 +96,7 @@ object Meta {
                 "Authorization" to "OAuth ${tok(c)}",
                 "offset" to offset.toString(),
                 "file_size" to file.length().toString(),
-            ), skip = offset)
+            ), skip = offset) { step(if (attempt == 1) "영상 보내는 중" else "다시 보내는 중 ($attempt/4)", it) }
         }
         return id
     }
@@ -109,10 +113,10 @@ object Meta {
      * 인스타 사진 API는 인터넷 주소(URL)만 받음 → 페이지에 '비공개 사진'으로 먼저 올려서
      * 그 사진 주소를 인스타에 넘김 (페이스북에는 보이지 않음).
      */
-    private fun photoContainer(c: Context, ig: String, file: File, caption: String): String {
+    private fun photoContainer(c: Context, ig: String, file: File, caption: String, step: (String, Int) -> Unit): String {
         val page = Store.get(c, "pageId")
         val ph = Http.postMultipart("$G/$page/photos",
-            mapOf("published" to "false", "access_token" to tok(c)), "source", file, mime(file)).getString("id")
+            mapOf("published" to "false", "access_token" to tok(c)), "source", file, mime(file)) { step("사진 보내는 중", it) }.getString("id")
         val imgs = Http.get("$G/$ph", mapOf("fields" to "images", "access_token" to tok(c))).getJSONArray("images")
         val url = imgs.getJSONObject(0).getString("source")
         return Http.postForm("$G/$ig/media", mapOf("image_url" to url, "caption" to caption, "access_token" to tok(c))).getString("id")
